@@ -386,6 +386,7 @@ app.get("/api/shuttle", async (req, res) => {
 
 app.use(express.static(publicDir));
 
+
 app.listen(PORT, () => {
   console.log(`Server running at http://localhost:${PORT}`);
 });
