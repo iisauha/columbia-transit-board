@@ -1,0 +1,13 @@
+{
+  "name": "columbia-board",
+  "version": "1.0.0",
+  "description": "LED-style subway + Columbia shuttle board",
+  "main": "server.js",
+  "scripts": {
+    "start": "node server.js"
+  },
+  "dependencies": {
+    "express": "^4.19.0",
+    "node-fetch": "^2.6.9"
+  }
+}
