@@ -1,4 +1,4 @@
-// server.js v14
+// server.js v15 — FIXED FOR NYC TIME + FILTER OUT TOMORROW TRIPS
 // Simplified shuttle logic: use rides only, ignore all walking rides,
 // and only keep rides that actually start at the origin stop (EC S or 120 S).
 
@@ -41,6 +41,36 @@ const TRIPSHOT_HEADERS = {
   "Content-Type": "application/json"
 };
 
+// ---------------------------------------
+// NYC TIME FIX
+// ---------------------------------------
+function getNYCTime() {
+  return new Date(
+    new Date().toLocaleString("en-US", { timeZone: "America/New_York" })
+  );
+}
+
+function getNYCPayloadTime() {
+  const nowNYC = getNYCTime();
+  return {
+    year: nowNYC.getFullYear(),
+    month: nowNYC.getMonth() + 1,
+    day: nowNYC.getDate(),
+    departAt: nowNYC.toISOString()
+  };
+}
+
+// ---------------------------------------
+// FILTER — only keep trips after NOW in NYC
+// ---------------------------------------
+function filterTripsAfterNYCNow(trips) {
+  const now = getNYCTime();
+  return trips.filter(t => {
+    if (!t.rawISO) return false;
+    return new Date(t.rawISO) >= now;
+  });
+}
+
 // ------------- HELPERS -------------
 
 function minutesFromNow(dateISOString) {
@@ -60,17 +90,15 @@ function formatTime(dateISOString) {
   return `${h}:${mm} ${suffix}`;
 }
 
-// Build a fresh TripShot payload for "depart now" origin → 96
 function buildTripShotPayload(originName, originLocation, originStopId) {
-  const now = new Date();
-  const day = {
-    year: now.getFullYear(),
-    month: now.getMonth() + 1,
-    day: now.getDate()
-  };
+  const time = getNYCPayloadTime();
 
   return {
-    day,
+    day: {
+      year: time.year,
+      month: time.month,
+      day: time.day
+    },
     startPoint: {
       location: originLocation,
       name: originName,
@@ -81,7 +109,7 @@ function buildTripShotPayload(originName, originLocation, originStopId) {
       name: "96",
       stop: NINETY_SIX_STOP_ID
     },
-    departAt: now.toISOString(),
+    departAt: time.departAt,
     arriveBy: null,
     directOnly: false,
     forUserId: null,
@@ -196,11 +224,10 @@ function parseTripShotCommutePlanForOrigin(json, originStopId, originLabel) {
   function considerRide(ride, routeInfo) {
     if (!ride || !routeInfo) return;
 
-    // Exclude Manhattanville campus shuttles entirely
+    // Exclude Manhattanville entirely
     const rName = (routeInfo.name || "").toLowerCase();
     const rShort = (routeInfo.shortName || "").toLowerCase();
-    if (rName.includes("manhattanville") || rName.includes("m'ville") || rName.includes("mville") ||
-        rShort.includes("manhattanville") || rShort.includes("m'ville") || rShort.includes("mville")) {
+    if (rName.includes("manhattanville") || rShort.includes("manhattanville")) {
       return;
     }
 
@@ -216,15 +243,10 @@ function parseTripShotCommutePlanForOrigin(json, originStopId, originLabel) {
         inner = wrapper[keys[0]];
       }
       const sid = (inner.stopId || "").toLowerCase();
-      if (sid === originIdLower) {
-        originNode = inner;
-      }
-      if (sid === ninetySixIdLower) {
-        ninetySixNode = inner;
-      }
+      if (sid === originIdLower) originNode = inner;
+      if (sid === ninetySixIdLower) ninetySixNode = inner;
     }
 
-    // Only keep rides that actually have our origin stop
     if (!originNode) return;
 
     const scheduledTime =
@@ -239,7 +261,7 @@ function parseTripShotCommutePlanForOrigin(json, originStopId, originLabel) {
 
     if (!liveTime) return;
 
-    // Determine if this ride actually reaches 96th after origin
+    // Determine if it actually reaches 96
     let reaches96 = false;
     if (ninetySixNode) {
       const ninetySixTime =
@@ -249,9 +271,7 @@ function parseTripShotCommutePlanForOrigin(json, originStopId, originLabel) {
       if (ninetySixTime) {
         const originMs = new Date(liveTime).getTime();
         const ninetySixMs = new Date(ninetySixTime).getTime();
-        if (originMs < ninetySixMs) {
-          reaches96 = true;
-        }
+        if (originMs < ninetySixMs) reaches96 = true;
       }
     }
 
@@ -259,21 +279,12 @@ function parseTripShotCommutePlanForOrigin(json, originStopId, originLabel) {
     let colorKey = "blue";
     if (routeInfo.colorLabel) {
       colorKey = routeInfo.colorLabel.toLowerCase();
-    } else if (/green/i.test(routeInfo.name) || /green/i.test(routeInfo.shortName)) {
-      colorKey = "green";
-    } else if (/red/i.test(routeInfo.name) || /red/i.test(routeInfo.shortName)) {
-      colorKey = "red";
-    } else if (/blue/i.test(routeInfo.name) || /blue/i.test(routeInfo.shortName)) {
-      colorKey = "blue";
-    }
-    if (!["green", "red", "blue"].includes(colorKey)) {
-      colorKey = "blue";
     }
 
     const liveDate = new Date(liveTime);
     const entry = {
       routeName: routeInfo.name,
-      color: routeInfo.colorLabel || colorKey[0].toUpperCase() + colorKey.slice(1),
+      color: routeInfo.colorLabel || colorKey,
       time: formatTime(liveTime),
       rawISO: liveTime,
       inMinutes: minutesFromNow(liveTime),
@@ -284,16 +295,14 @@ function parseTripShotCommutePlanForOrigin(json, originStopId, originLabel) {
     if (scheduledTime) {
       const delayMin =
         (liveDate.getTime() - new Date(scheduledTime).getTime()) / 60000;
-      if (delayMin > 1) {
-        entry.delayed = true;
-      }
+      if (delayMin > 1) entry.delayed = true;
     }
 
     buckets[colorKey].push(entry);
   }
 
   for (const ride of rides) {
-    if (isWalkingRide(ride)) continue; // ignore walking segments entirely
+    if (isWalkingRide(ride)) continue;
 
     const routeInfo =
       routeInfoById[ride.routeId] ||
@@ -307,7 +316,7 @@ function parseTripShotCommutePlanForOrigin(json, originStopId, originLabel) {
     considerRide(ride, routeInfo);
   }
 
-  // Sort each color's list and keep first 3
+  // Sort and take first 3
   for (const key of ["green", "red", "blue"]) {
     const arr = buckets[key];
     arr.sort((a, b) => new Date(a.rawISO) - new Date(b.rawISO));
@@ -344,16 +353,27 @@ app.get("/api/shuttle", async (req, res) => {
 
     const [dataEC, data120] = await Promise.all([respEC.json(), resp120.json()]);
 
-    const parsedEC = parseTripShotCommutePlanForOrigin(
+    let parsedEC = parseTripShotCommutePlanForOrigin(
       dataEC,
       EC_S_STOP_ID,
       "EC S"
     );
-    const parsed120 = parseTripShotCommutePlanForOrigin(
+    let parsed120 = parseTripShotCommutePlanForOrigin(
       data120,
       S120_STOP_ID,
       "120 S"
     );
+
+    // ---------------------------------------
+    // APPLY THE NYC FUTURE TRIP FILTER
+    // ---------------------------------------
+    parsedEC.green = filterTripsAfterNYCNow(parsedEC.green);
+    parsedEC.red = filterTripsAfterNYCNow(parsedEC.red);
+    parsedEC.blue = filterTripsAfterNYCNow(parsedEC.blue);
+
+    parsed120.green = filterTripsAfterNYCNow(parsed120.green);
+    parsed120.red = filterTripsAfterNYCNow(parsed120.red);
+    parsed120.blue = filterTripsAfterNYCNow(parsed120.blue);
 
     res.json({ ecS: parsedEC, s120: parsed120 });
   } catch (err) {
